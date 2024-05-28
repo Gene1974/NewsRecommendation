@@ -2,23 +2,16 @@ import os
 os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 device = 'cuda'
 
-import json
-import matplotlib.pyplot as plt
 import numpy as np
-import pickle
-import random
 import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from copy import deepcopy
 from sklearn.metrics import roc_auc_score
-from torch.utils.data import Dataset, DataLoader
 from tqdm.notebook import tqdm
-from pytorchtools import EarlyStopping
-from utils import mrr_score, dcg_score, ndcg_score
-from model import Model
+from utils import mrr_score, dcg_score, ndcg_score, EarlyStopping
+from . import EntityModel
 assert(torch.cuda.is_available())
 
 def encode_all_news(news_encoder, news_info, news_ents = None):
@@ -55,14 +48,15 @@ def train_epoch(model, train_dataset, optimizer, entrophy):
     for _, batch in enumerate(train_dataset):
         if batch[0].shape[0] == 0:
             break
-        sample = torch.tensor(batch[0], dtype = torch.long, device = device)
-        history = torch.tensor(batch[1], dtype = torch.long, device = device)
-        correct = torch.argmax(torch.tensor(batch[2], dtype = torch.long, device = device), dim = 1)
-        samp_ents = torch.tensor(batch[3], dtype = torch.long, device = device)
-        user_ents = torch.tensor(batch[4], dtype = torch.long, device = device)
+        impr_news, hist_news, hist_labels, impr_ents, hist_ents = batch
+        impr_news = torch.tensor(impr_news, dtype = torch.long, device = device)
+        hist_news = torch.tensor(hist_news, dtype = torch.long, device = device)
+        hist_correct = torch.argmax(torch.tensor(hist_labels, dtype = torch.long, device = device), dim = 1)
+        impr_ents = torch.tensor(impr_ents, dtype = torch.long, device = device)
+        hist_ents = torch.tensor(hist_ents, dtype = torch.long, device = device)
         optimizer.zero_grad()
-        output = model(history, sample, samp_ents, user_ents)
-        loss = entrophy(output, correct)
+        output = model(impr_news, hist_news, impr_ents, hist_ents)
+        loss = entrophy(output, hist_correct)
         train_losses.append(loss.item())
         loss.backward()
         optimizer.step()
@@ -117,24 +111,24 @@ def train(model, train_dataset, dev_dataset, news_info, dev_users, dev_user_hist
     auc, mrr, ndcg5, ndcg10 = evaluate(model, dev_dataset, news_info, dev_users, dev_user_hist, news_ents)
     return auc, mrr, ndcg5, ndcg10
 
-def train_multi_times(args, word_emb, cate_emb, ent_emb, train_dataset, dev_dataset, news_info, dev_users, dev_user_hist, news_ents = None):
-    print(args)
-#     aucs = []
-    for i in range(5):
-        model = Model(args, word_emb, cate_emb, ent_emb).to('cuda')
-        train_and_eval(model, train_dataset, dev_dataset, news_info, dev_users, dev_user_hist, news_ents, args['epochs'])
-    aucs, mrrs, ndcg5s, ndcg10s = [], [], [], []
-    for i in range(3):
-        model = Model(args, word_emb, cate_emb, ent_emb).to('cuda')
-        auc, mrr, ndcg5, ndcg10 = train_and_eval(model, train_dataset, dev_dataset, news_info, dev_users, dev_user_hist, news_ents, 6)
-        aucs.append(auc)
-        mrrs.append(mrr)
-        ndcg5s.append(ndcg5)
-        ndcg10s.append(ndcg10)
-    auc, mrr, ndcg5, ndcg10 = np.average(aucs), np.average(mrrs), np.average(ndcg5s), np.average(ndcg10s)
-    print(auc, mrr, ndcg5, ndcg10)
-    print('Average AUC: {:.4f} , MRR: {:.4f}, nDCG5:{:.4f}, nDCG10: {:.4f}'.format(auc, mrr, ndcg5, ndcg10))
-    return auc, mrr, ndcg5, ndcg10
+# def train_multi_times(args, word_emb, cate_emb, ent_emb, train_dataset, dev_dataset, news_info, dev_users, dev_user_hist, news_ents = None):
+#     print(args)
+# #     aucs = []
+#     for i in range(5):
+#         model = Model(args, word_emb, cate_emb, ent_emb).to('cuda')
+#         train_and_eval(model, train_dataset, dev_dataset, news_info, dev_users, dev_user_hist, news_ents, args['epochs'])
+#     aucs, mrrs, ndcg5s, ndcg10s = [], [], [], []
+#     for i in range(3):
+#         model = Model(args, word_emb, cate_emb, ent_emb).to('cuda')
+#         auc, mrr, ndcg5, ndcg10 = train_and_eval(model, train_dataset, dev_dataset, news_info, dev_users, dev_user_hist, news_ents, 6)
+#         aucs.append(auc)
+#         mrrs.append(mrr)
+#         ndcg5s.append(ndcg5)
+#         ndcg10s.append(ndcg10)
+#     auc, mrr, ndcg5, ndcg10 = np.average(aucs), np.average(mrrs), np.average(ndcg5s), np.average(ndcg10s)
+#     print(auc, mrr, ndcg5, ndcg10)
+#     print('Average AUC: {:.4f} , MRR: {:.4f}, nDCG5:{:.4f}, nDCG10: {:.4f}'.format(auc, mrr, ndcg5, ndcg10))
+#     return auc, mrr, ndcg5, ndcg10
 
 
 

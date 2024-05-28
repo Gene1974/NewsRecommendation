@@ -1,7 +1,5 @@
 import os
-
 os.environ["CUDA_VISIBLE_DEVICES"] = '0'
-device = 'cuda'
 
 import json
 import numpy as np
@@ -27,6 +25,7 @@ def load_news(path):
                 url, title_entities, abstract_entities = line.strip().split('\t')
             title = clear_str(title)
             abstract = clear_str(abstract)
+            # todo: title_entities only
             entities = json.loads(title_entities) + json.loads(abstract_entities)
             ent_words = [clear_str(ent['Label']) for ent in entities] # list(list(str))
             ent_ids = [ent['WikidataId'] for ent in entities] # list(str): ['Q80976', 'Q43274', 'Q9682']
@@ -47,7 +46,7 @@ def load_news(path):
             if news_id not in newsid_dict:
                 newsid_dict[news_id] = len(newsid_dict)
                 news_list.append([category, subcategory, title, abstract, ent_words, ent_ids])
-    print(len(news_list))
+    print('load_news: news:{} word:{} cate:{} ent:{}'.format(len(news_list), len(word_dict), len(cate_dict), len(ent_dict)))
     return news_list, newsid_dict, word_dict, cate_dict, ent_dict
 
 # news_info: news_index -> title
@@ -75,12 +74,14 @@ def map_news_input(news_list, word_dict, cate_dict, ent_dict, trip_data = None):
         ent_ids[i, :len(ent_id)] = [ent_dict[ent] for ent in ent_id[:max_ent]]
         for j in range(min(len(ent_word), max_ent)):
             ent_words[i, j, :len(ent_word[j])] = [word_dict[word] for word in ent_word[j][:max_ent_words]]
-        ent_trip = trip_data[ent_ids] # (n_ent, n_trip)
-        for j in range(min(len(ent_trip), max_ent)):
-            ent_trips[i, j, :len(ent_trip[j])] = [ent_dict[ent] for ent in ent_trip[j][:max_ent_trips]]
+        # TODO: 直接截断会不会有问题
+        ent_trip = [trip_data[ent_id] for ent_id in ent_ids[i]]
+        ent_trip_tail = [[trip[2] for trip in trip_data[ent_id]] for ent_id in ent_ids[i]]
+        for j in range(min(len(ent_trip_tail), max_ent)):
+            ent_trips[i, j, :len(ent_trip_tail[j])] = [ent for ent in ent_trip_tail[j][:max_ent_trips]]
     news_info = np.concatenate((titles, bodys, cates, subcates), axis = 1)
     news_ents = np.concatenate((ent_ids.reshape(n_news, max_ent, 1), ent_words, ent_trips), axis = 2)
-    print(news_info.shape, news_ents.shape)
+    print('map_news_input: news_info: {} news_ents: {}'.format(news_info.shape, news_ents.shape))
     return news_info, news_ents # index -> news_info
 
 def load_glove(word_to_ix, dim = 100):
@@ -96,7 +97,7 @@ def load_glove(word_to_ix, dim = 100):
             word = data[0]
             if word in word_to_ix:
                 word_emb[word_to_ix[word]] = [float(i) for i in data[1:]]
-    print(word_emb.shape)
+    print('load glove: ',word_emb.shape)
     return torch.tensor(word_emb, dtype = torch.float)
 
 def load_train_impression(path, newsid_dict): # train&dev
@@ -159,7 +160,7 @@ def get_train_input(logs): # 和 map_user 使用同一个 log
     user_id = np.array(user_id, dtype = 'int32')
     labels = np.zeros((n_imps, 1 + neg_ratio), dtype = 'int32')
     labels[:, 0] = 1
-    print(n_imps)
+    print('get_train_input:', n_imps)
     return imps, user_id, labels
 
 def get_dev_input(logs): # 和 map_user 使用同一个 log
@@ -171,7 +172,7 @@ def get_dev_input(logs): # 和 map_user 使用同一个 log
         imps.append(np.array(positive + negative, dtype = 'int32'))
         labels.append([1] * len(positive) + [0] * len(negative))
         user_id[i] = i
-    print(len(logs))
+    print('get_dev_input', len(logs))
     return imps, user_id, labels
 
 class TrainDataset(Dataset):
@@ -193,24 +194,24 @@ class TrainDataset(Dataset):
         start = idx * self.batch_size
         end = min((idx + 1) * self.batch_size, self.n_data)
         
-        data_id = self.imp_datas[start: end] # (n_batch, 1 + k)
-        data_news = self.news[data_id] # (n_batch, 1 + k, news_len)
+        impr_id = self.imp_datas[start: end] # (n_batch, 1 + k)
+        impr_news = self.news[impr_id] # (n_batch, 1 + k, news_len)
         user_id = self.imp_users[start: end] # (n_batch)
-        user_news_id = self.user_clicks[user_id] # (n_batch, n_hist)
-        user_news = self.news[user_news_id] # (n_batch, n_hist, news_len)
-        labels = self.imp_labels[start: end] # (n_batch, 1 + k)
+        hist_news_id = self.user_clicks[user_id] # (n_batch, n_hist)
+        hist_news = self.news[hist_news_id] # (n_batch, n_hist, news_len)
+        hist_labels = self.imp_labels[start: end] # (n_batch, 1 + k)
         
         if self.news_ents is not None:
-            samp_ents = self.news_ents[data_id]
-            user_ents = self.news_ents[user_news_id]
-            return data_news, user_news, labels, samp_ents, user_ents
+            impr_ents = self.news_ents[impr_id]
+            hist_ents = self.news_ents[hist_news_id]
+            return impr_news, hist_news, hist_labels, impr_ents, hist_ents
         
         if self.news_urls is not None:
-            samp_urls = self.news_urls[data_id]
-            user_urls = self.news_urls[user_news_id]
-            return data_news, user_news, labels, samp_urls, user_urls
+            impr_urls = self.news_urls[impr_id]
+            hist_urls = self.news_urls[hist_news_id]
+            return impr_news, hist_news, hist_labels, impr_urls, hist_urls
         
-        return data_news, user_news, labels
+        return impr_news, hist_news, hist_labels
     
 class DevDataset(Dataset): # data 和 label 是 list，每条数据不同长度
     def __init__(self, imp_datas, imp_users, imp_labels, news_info, user_clicks, batch_size):
@@ -255,23 +256,23 @@ def load_ent_emb(ent_dict):
             if ent_id in ent_dict:
                 ent_emb[ent_dict[ent_id]] = [float(i) for i in data[1:]]
     ent_emb = torch.tensor(ent_emb, dtype = torch.float)
-    print(ent_emb.shape)
+    print('load_ent_emb: ', ent_emb.shape)
     return ent_emb
 
 # load triplets from kg
 def load_triplets(ent_dict):
     rel_dict = {}
-    triplets = {ent: [] for ent in ent_dict}
+    triplets = {ent_dict[ent]: [] for ent in ent_dict}
     with open('/data/Recommend/MIND/wikidata_graph.txt', 'r') as f:
         for line in f:
             h, r, t = line.strip().split('\t')
-            if h in triplets:
+            if h in ent_dict and ent_dict[h] in triplets:
                 if r not in rel_dict:
                     rel_dict[r] = len(rel_dict)
                 if t not in ent_dict:
                     ent_dict[t] = len(ent_dict)
-                triplets[h].append([ent_dict[h], rel_dict[r], ent_dict[t]])
-    print(triplets)
+                triplets[ent_dict[h]].append([ent_dict[h], rel_dict[r], ent_dict[t]])
+    print('load_triplet: ent: {} rel: {} trip: {}'.format(len(ent_dict), len(rel_dict), len(triplets)))
     return ent_dict, rel_dict, triplets
 
 
@@ -289,36 +290,35 @@ news_list: original news
 news_info: mapped news(word ids)
 '''
 def get_data():
+    # get news
     news_list, newsid_dict, word_dict, cate_dict, ent_dict = load_news('/data/Recommend/MIND/small_news.tsv') # ent: 65238
-    print(len(ent_dict))
-    news_info, news_ents = map_news_input(news_list, word_dict, cate_dict, ent_dict)
+    # get kg triplets
     ent_dict, rel_dict, triplets = load_triplets(ent_dict) # 127447 760 32474
-    print(len(ent_dict), len(rel_dict), len(triplets))
+    # encode news
+    news_info, news_ents = map_news_input(news_list, word_dict, cate_dict, ent_dict, triplets)
+    # pretrained embeddings
     ent_emb = load_ent_emb(ent_dict)
-
-    print(max([len(i) for i in triplets]))
-    from utils import count_number
-    s = count_number(triplets)
-    print(s)
-
-    # word_emb = load_glove(word_dict, 300)
-    # cate_emb = load_glove(cate_dict, 100)
+    word_emb = load_glove(word_dict, 300)
+    cate_emb = load_glove(cate_dict, 100)
     
-    # train_logs = load_train_impression('/data/Recommend/MIND/MINDsmall_train/behaviors.tsv', newsid_dict)
-    # dev_logs = load_train_impression('/data/Recommend/MIND/MINDsmall_dev/behaviors.tsv', newsid_dict)
-    # train_user_hist = map_user(train_logs)
-    # dev_user_hist = map_user(dev_logs)
-
-    # train_datas, train_users, train_labels = get_train_input(train_logs)
-    # dev_datas, dev_users, dev_labels = get_dev_input(dev_logs)
+    # get user impression history
+    train_logs = load_train_impression('/data/Recommend/MIND/MINDsmall_train/behaviors.tsv', newsid_dict)
+    dev_logs = load_train_impression('/data/Recommend/MIND/MINDsmall_dev/behaviors.tsv', newsid_dict)
+    # get user history
+    train_user_hist = map_user(train_logs)
+    dev_user_hist = map_user(dev_logs)
+    # encode user history
+    train_datas, train_users, train_labels = get_train_input(train_logs)
+    dev_datas, dev_users, dev_labels = get_dev_input(dev_logs)
     # # valid_datas, valid_users, valid_labels = get_train_input(dev_logs) # 用 train 的方法构造 dev_set
 
-    # train_dataset = TrainDataset(train_datas, train_users, train_labels, news_info, train_user_hist, 16, news_ents)
-    # dev_dataset = DevDataset(dev_datas, dev_users, dev_labels, news_info, dev_user_hist, 64)
+    # get dataset
+    train_dataset = TrainDataset(train_datas, train_users, train_labels, news_info, train_user_hist, 16, news_ents)
+    dev_dataset = DevDataset(dev_datas, dev_users, dev_labels, news_info, dev_user_hist, 64)
     # # valid_dataset = TrainDataset(valid_datas, valid_users, valid_labels, news_info, dev_user_hist, 16, news_ents)
 
-    # return train_dataset, dev_dataset, news_info, dev_users, dev_user_hist, news_ents, \
-    #     word_emb, cate_emb, ent_emb
+    return train_dataset, dev_dataset, news_info, dev_users, dev_user_hist, news_ents, \
+        word_emb, cate_emb, ent_emb
 
 if __name__ == '__main__':
     get_data()
